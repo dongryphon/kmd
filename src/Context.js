@@ -2,6 +2,7 @@
 
 const Phyl = require('phylo');
 
+const { Empty, raise } = require('./util');
 const { Manager } = require('./Msg');
 const PropertyMap = require('./PropertyMap');
 const Sources = require('./Sources');
@@ -210,19 +211,10 @@ class Context {
 
         let key = this.constructor.KEY;
 
-        propMap.flatten(key, this._getData());
+        propMap.flatten(key, this.data);
         propMap.add(key + '.dir', this.dir.path);
 
         return propMap;
-    }
-
-    /**
-     * Returns the data object for this context.
-     * @returns {Object}
-     * @protected
-     */
-    _getData () {
-        return this.data;
     }
 
     /**
@@ -255,6 +247,8 @@ class Workspace extends Context {
         if (this._manager && !this._manager.baseDir) {
             this._manager.baseDir = this.dir;
         }
+
+        this.frameworks = new Empty();
     }
 
     /**
@@ -339,6 +333,31 @@ class Workspace extends Context {
         return this;
     }
 
+    getFramework (name) {
+        let fw = this.frameworks[name];
+
+        if (!fw) {
+            fw = this.data.frameworks[name];
+
+            if (!fw) {
+                raise(`No framework "${name}" found in workspace`);
+            }
+            if (!fw.path) {
+                raise(`Framework "${name}" has no "path"`);
+            }
+
+            let dir = this.dir.resolve(fw.path);
+
+            if (!dir.exists()) {
+                raise(`Framework "${name}" path does not exist:  ${dir}`);
+            }
+
+            this.frameworks[name] = fw = Framework.load(dir, this);
+        }
+
+        return fw;
+    }
+
     getPackagePath () {
         let dirs = [ Phyl.from(this.getProp('workspace.packages.extract')) ];
         let dir = this.getProp('workspace.packages.dir');
@@ -383,6 +402,17 @@ class CodeBase extends Context {
         return cp;
     }
 
+    get framework () {
+        let ws = this.workspace,
+            fw = this.data.framework;
+
+        if (!ws) {
+            raise(`Cannot find workspace for ${this.type} at ${this.dir}`);
+        }
+
+        return ws.getFramework(this.data.framework);
+    }
+
     get overrides () {
         let op = this._overrides;
 
@@ -392,6 +422,10 @@ class CodeBase extends Context {
         }
 
         return op;
+    }
+
+    get type () {
+        return this.constructor.name;
     }
 
     get workspace () {
@@ -481,13 +515,20 @@ class Package extends CodeBase {
         return false;
     }
 
-    _getData () {
-        let d = this.data;
+    constructor (config) {
+        let data = config.data;
+        let sencha = data && data.sencha;
 
-        return Object.assign({
-            name: d.name,
-            version: d.name
-        }, d.sencha);
+        if (sencha) {
+            delete data.sencha;
+            sencha.$npm = data;
+            sencha.name = sencha.name || data.name;
+            sencha.version = sencha.version || data.version;
+
+            config.data = sencha;
+        }
+
+        super(config);
     }
 }
 
@@ -498,11 +539,23 @@ Object.assign(Package.prototype, {
 
 //--------------------------------------------------------------------------------
 
+class Framework extends Package {
+    //
+}
+
+Object.assign(Framework.prototype, {
+    isFramework: true,
+    prefix: 'framework'
+});
+
+//--------------------------------------------------------------------------------
+
 module.exports = {
     Manager,
     Context,
     Workspace,
     CodeBase,
     App,
-    Package
+    Package,
+    Framework
 };

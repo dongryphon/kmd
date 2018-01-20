@@ -10,6 +10,7 @@
         "url": "https://github.com/EpiphanySoft/kmd/issues"
     },
     "dependencies": {
+        "@epiphanysoft/extjs": "github:EpiphanySoft/extjs#6.2.0",
         "babel-traverse": "^6.26.0",
         "babylon": "^6.18.0",
         "json5": "^0.5.1",

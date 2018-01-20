@@ -2,65 +2,17 @@
 
 /* global describe */
 
-const Phyl = require('phylo');
 const expect = require('assertly').expect;
 
-const { Manager, Context, App, Package, Workspace } = require('../../src/Context');
+const { Context } = require('../../src/Context');
 const Symbols = require('../../src/Symbols');
 
-const baseDir = Phyl.from(__dirname).resolve('../..');
-const projectsDir = Phyl.from(__dirname).resolve('../projects');
+const { TestManager, getClassNamesForSymbols, projectsDir } = require('../TestManager');
 
 const Dir = {
-    base: baseDir,
-    projects: projectsDir,
     soloApp: projectsDir.join('solo-app'),
     workspace: projectsDir.join('workspace')
 };
-
-class TestManager extends Manager {
-    constructor () {
-        super();
-
-        this.messages = [];
-
-        this.logger = {
-            error: m => this._log('ERR', m),
-            info:  m => this._log('INF', m),
-            log:   m => this._log('DBG', m),
-            warn:  m => this._log('WRN', m)
-        };
-    }
-
-    _log (level, msg) {
-        this.messages.push(`${level}: ${msg}`);
-    }
-
-    fixAbsolutePaths () {
-        this.messages = this.messages.map(m => {
-            let start = m.lastIndexOf('--') + 3;
-            let end = m.lastIndexOf(':', m.lastIndexOf(':') - 1);
-            let a = m.substr(0, start);
-            let b = Phyl.from(m.substring(start, end));
-            let c = m.substr(end);
-
-            expect(b.isAbsolute()).to.be(true);
-
-            let r = b.relativize(this.baseDir).slashify();
-
-            return a + r.path + c;
-        });
-    }
-}
-
-function getClassNames (symbols) {
-    let classes = symbols.classes;
-    expect(classes).to.not.be(null);
-    classes.sort();
-
-    let classNames = classes.items.map(it => it.name);
-    return [classes, classNames];
-}
 
 describe('Symbols', function () {
     describe('basics', async function () {
@@ -76,7 +28,7 @@ describe('Symbols', function () {
 
             let symbols = new Symbols(sources);
 
-            let [classes, classNames] = getClassNames(symbols);
+            let [classes, classNames] = getClassNamesForSymbols(symbols);
 
             expect(this.mgr.messages).to.equal([
                 'WRN: C1000: Unrecognized use of Ext.define (Expected 2nd argument to be an ' +
@@ -135,7 +87,7 @@ describe('Symbols', function () {
             expect(symbols.files.length).to.be(1);
 
             let classNames;
-            [classes, classNames] = getClassNames(symbols);
+            [classes, classNames] = getClassNamesForSymbols(symbols);
 
             expect(classNames).to.equal([
                 'WA.MainView',
