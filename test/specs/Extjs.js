@@ -29,13 +29,21 @@ describe('Extjs', function () {
 
             let fw = app.framework;
 
-            let sources = await app.loadSources();
+            expect(fw.isFramework).to.be(true);
+
+            let catalog = fw.catalog;
+            let pkgs = fw.packages;
+
             debugger
+        });
+
+        it('should load sources for a classic toolkit app', async function () {
+            let app = this.workspace.apps[0];
+
+            let sources = await app.loadSources();
 
             let symbols = new Symbols(sources);
             let classes = symbols.classes;
-
-            debugger
         });
     });
 });

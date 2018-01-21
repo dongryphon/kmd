@@ -2,7 +2,7 @@
 
 const Phyl = require('phylo');
 
-const { Empty, raise } = require('./util');
+const { distinctifyPaths, Empty, raise } = require('./util');
 const { Manager } = require('./Msg');
 const PropertyMap = require('./PropertyMap');
 const Sources = require('./Sources');
@@ -142,8 +142,52 @@ class Context {
         return new this(config);
     }
 
+    get catalog () {
+        let pkgs = this.packages;
+        let catalog = new Empty();
+
+        for (let p of pkgs) {
+            catalog[p.name] = p;
+        }
+
+        return this._set('catalog', catalog);
+    }
+
     get manager () {
         return this._manager || this.workspace.manager;
+    }
+
+    get name () {
+        return this.data.name || this.type;
+    }
+
+    get packages () {
+        let dirs = this.getPackagePath();
+        let creator = this.creator && this.creator.isPackage && this.creator;
+        let creatorPath = creator && creator.dir.path;
+        let pkgs = [];
+
+        let load = d => {
+            let p = d.equals(creatorPath) ? creator : Package.load(d, this);
+            if (p) {
+                pkgs.push(p);
+            }
+            return p;
+        };
+
+        for (let dir of dirs) {
+            // The package path can point directly at a package...
+            if (!load(dir)) {
+                // ...but typically points at a folder of packages
+                dir.list('d', (name, d) => load(d));
+            }
+        }
+
+        return this._set('packages', pkgs);
+    }
+
+    get type () {
+        return this.constructor.name;
     }
 
     // set manager (value) {
@@ -172,6 +216,38 @@ class Context {
         return this.configProps || (this.configProps = this._gatherProps());
     }
 
+    getPackagePath () {
+        let props = this._getPackagePathProps();
+        let dirs = [];
+
+        if (props) {
+            for (let prop of props) {
+                let dir = this.getProp(prop);
+
+                if (dir) {
+                    for (let d of dir.split(',')) {
+                        if (d) {
+                            dirs.push(this.dir.resolve(d));
+                        }
+                    }
+                }
+            }
+
+            if (!dirs.length) {
+                dirs.push(this.dir.join('packages'));
+            }
+        }
+
+        return dirs.filter(distinctifyPaths).map(d => d.nativize());
+    }
+
+    /**
+     * @abstract
+     */
+    _getPackagePathProps () {
+        raise(`Unimplemented`);
+    }
+
     /**
      * Looks up a property in the property map (see `getConfigProps`).
      * @param {String} prop The name of the property to retrieve.
@@ -181,6 +257,10 @@ class Context {
     getProp (prop, refresh = false) {
         let props = this.getConfigProps(refresh);
         return props.get(prop);
+    }
+
+    getRelProp (prop, refresh = false) {
+        return this.getProp(`${this.prefix}.${prop}`, refresh);
     }
 
     /**
@@ -225,13 +305,15 @@ class Context {
      */
     _set (prop, value) {
         Object.defineProperty(this, prop, { value: value });
+        return value;
     }
 }
 
 Object.assign(Context.prototype, {
     isContext: true,
     configProps: null,
-    creator: null
+    creator: null,
+    prefix: null
 });
 
 //--------------------------------------------------------------------------------
@@ -285,48 +367,22 @@ class Workspace extends Context {
             apps.push(creator);
         }
 
-        this._set('apps', apps);
-
-        return apps;
+        return this._set('apps', apps);
     }
 
     /**
      * @property {Package[]} packages
      * The array of `Package` instances for this workspace.
      */
-    get packages () {
-        let dirs = this.getPackagePath();
-        let creator = this.creator && this.creator.isPackage && this.creator;
-        let creatorPath = creator && creator.dir.path;
-        let pkgs = [];
-
-        let load = d => {
-            let p = d.equals(creatorPath) ? creator : Package.load(d, this);
-            if (p) {
-                pkgs.push(p);
-            }
-            return p;
-        };
-
-        for (let dir of dirs) {
-            // The package path can point directly at a package...
-            if (!load(dir)) {
-                // ...but typically points at a folder of packages
-                dir.list('d', (name, d) => load(d));
-            }
-        }
-
-        this._set('packages', pkgs);
-
-        return pkgs;
-    }
 
     get manager () {
-        if (!this._manager) {
-            this._manager = new Manager(this.dir);
+        let mgr = this._manager;
+
+        if (!mgr) {
+            mgr = new Manager(this.dir);
         }
 
-        return this._manager;
+        return this._set('manager', mgr);
     }
 
     get workspace () {
@@ -358,26 +414,12 @@ class Workspace extends Context {
         return fw;
     }
 
-    getPackagePath () {
-        let dirs = [ Phyl.from(this.getProp('workspace.packages.extract')) ];
-        let dir = this.getProp('workspace.packages.dir');
+    _getPackagePathProps () {
+        return [ 'workspace.packages.extract', 'workspace.packages.dir' ];
+    }
 
-        if (dir) {
-            for (let d of dir.split(',')) {
-                dirs.push(Phyl.from(d));
-            }
-        }
-        else {
-            dirs.push(this.dir.join('packages'));
-        }
-
-        let map = {};
-        let distinct = d => {
-            let p = d && d.exists() && d.absolutePath();
-            return p && !map[p] && (map[p] = d);
-        };
-
-        return dirs.filter(distinct).map(d => d.nativize());
+    hasFramework (name) {
+        return name in this.data.frameworks;
     }
 }
 
@@ -390,12 +432,15 @@ Object.assign(Workspace.prototype, {
 
 //--------------------------------------------------------------------------------
 
+/**
+ * @abstract
+ */
 class CodeBase extends Context {
     get classpath () {
         let cp = this._classpath;
 
         if (!cp) {
-            cp = this.getProp(`${this.prefix}.classpath`);
+            cp = this.getRelProp('classpath');
             this._classpath = cp = this._resolvePath(cp);
         }
 
@@ -403,39 +448,59 @@ class CodeBase extends Context {
     }
 
     get framework () {
-        let ws = this.workspace,
-            fw = this.data.framework;
+        let fw = this.data.framework;
 
-        if (!ws) {
-            raise(`Cannot find workspace for ${this.type} at ${this.dir}`);
+        let ws = this.workspace;
+
+        if (ws && ws.hasFramework(fw)) {
+            fw = ws.getFramework(this.data.framework);
+        }
+        else {
+            let dir = this.dir.resolve(fw);
+
+            if (!dir.exists()) {
+                raise(`Framework "${fw}" path does not exist:  ${dir}`);
+            }
+
+            fw = Framework.load(dir, this);
         }
 
-        return ws.getFramework(this.data.framework);
+        return this._set('framework', fw);
     }
 
     get overrides () {
-        let op = this._overrides;
+        let op = this.getRelProp('overrides');
 
-        if (!op) {
-            op = this.getProp(`${this.prefix}.overrides`);
-            this._overrides = op = this._resolvePath(op);
-        }
+        op = this._resolvePath(op);
 
-        return op;
+        return this._set('overrides', op);
     }
 
-    get type () {
-        return this.constructor.name;
+    get toolkit () {
+        let ret = this.getRelProp('toolkit');
+
+        if (ret) {
+            let fw = this.framework;
+            let pkg = fw.catalog[ret];
+
+            if (!pkg) {
+                raise(`Toolkit ${ret} not found in framework ${fw.dir}`);
+            }
+
+            ret = pkg;
+        }
+
+        return this._set('toolkit', ret);
     }
 
     get workspace () {
-        let workspace = this._workspace || this.creator;
+        let workspace = this.creator;
 
         if (!workspace || !workspace.isWorkspace) {
-            this._workspace = workspace = Workspace.from(this.dir, this);
+            workspace = Workspace.from(this.dir, this);
         }
 
-        return workspace;
+        return this._set('workspace', workspace);
     }
 
     getClassFiles () {
@@ -490,12 +555,18 @@ class CodeBase extends Context {
 }
 
 Object.assign(CodeBase.prototype, {
-    isCodeBase: true
+    isCodeBase: true,
+
+    _framework: null,
+    _workspace: null
 });
 
 //--------------------------------------------------------------------------------
 
 class App extends CodeBase {
+    _getPackagePathProps () {
+        return [ 'app.packages.dir' ];
+    }
 }
 
 Object.assign(App.prototype, {
@@ -509,7 +580,7 @@ class Package extends CodeBase {
     static at (dir) {
         if (super.at(dir)) {
             let data = dir.join(this.FILE).load();
-            return typeof data.sencha === 'object';
+            return +data.format === 1 || typeof data.sencha === 'object';
         }
 
         return false;
@@ -529,6 +600,10 @@ class Package extends CodeBase {
         }
 
         super(config);
+    }
+
+    _getPackagePathProps () {
+        return [ 'package.subpkgs' ];
     }
 }
 
@@ -550,6 +625,30 @@ Object.assign(Framework.prototype, {
 
 //--------------------------------------------------------------------------------
 
+class Toolkit extends Package {
+    _getPackagePathProps () {
+        return null;
+    }
+}
+
+Object.assign(Toolkit.prototype, {
+    isToolkit: true
+});
+
+//--------------------------------------------------------------------------------
+
+class Theme extends Package {
+    _getPackagePathProps () {
+        return null;
+    }
+}
+
+Object.assign(Theme.prototype, {
+    isTheme: true
+});
+
+//--------------------------------------------------------------------------------
+
 module.exports = {
     Manager,
     Context,
@@ -557,5 +656,7 @@ module.exports = {
     CodeBase,
     App,
     Package,
-    Framework
+    Framework,
+    Toolkit,
+    Theme
 };
